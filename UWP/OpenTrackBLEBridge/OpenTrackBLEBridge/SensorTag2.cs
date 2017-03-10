@@ -200,6 +200,8 @@ namespace OpenTrackBLEBridge
                 _accYFiliter.Reset();
                 _accXFiliter.Reset();
                 _gyroZFiliter.Reset();
+                _currentYaw = 0;
+                dt = 0;
                 UpdateStatue(TrackerStatus.Align, "Aliging, keep stable");
  
             }
