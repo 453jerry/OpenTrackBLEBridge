@@ -13,66 +13,170 @@ using Windows.UI.Xaml.Data;
 using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
-
+using Windows.UI.Core;
+using Windows.Devices;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Devices.Enumeration;
 using Windows.Devices.Bluetooth;
+using Windows.Storage.Streams;
 using System.Diagnostics;
+
 
 // The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x409
 
 namespace OpenTrackBLEBridge
 {
+
     /// <summary>
     /// An empty page that can be used on its own or navigated to within a Frame.
     /// </summary>
     public sealed partial class MainPage : Page
     {
-        public ObservableCollection<BLEDevice> BLEDevices { get; set; } = new ObservableCollection<BLEDevice>();
+        public ObservableCollection<DeviceInformationDisplay> BLEDeviceCollection { get; set; } = new ObservableCollection<DeviceInformationDisplay>();
 
-        BluetoothLEAdvertisementWatcher bleADWatvher = new BluetoothLEAdvertisementWatcher();
-        
+        public ITracker CurrentTracker { get; private set; }
+
         public MainPage()
         {
             this.InitializeComponent();
-            bleADWatvher.Received += BleADWatvher_Received;
-            bleADWatvher.Start();
+            FindDevice();
+
         }
 
-        private async void BleADWatvher_Received(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementReceivedEventArgs args)
+
+        async void FindDevice()
+        {
+            var result = await DeviceInformation.FindAllAsync(GattDeviceService.GetDeviceSelectorFromUuid(new Guid(SensorTag2.SENSORTAG2_MOVEMENT_SERVICE)));
+
+            foreach (var item in result)
+            {
+                BLEDeviceCollection.Add(new DeviceInformationDisplay(item));
+
+            }
+        }
+
+
+        private async void ListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            splitViewToggle.IsChecked = false;
+            if (CurrentTracker != null)
+            {
+                if (CurrentTracker.Status != TrackerStatus.Connected)
+                    await CurrentTracker.Disconnect();
+                CurrentTracker.StatusChanged -= CurrentTracker_StatusChanged;
+                CurrentTracker.ValueChanged -= CurrentTracker_ValueChanged;
+                CurrentTracker = null;
+                deviceBtn.IsEnabled = false;
+                deviceName.Text = string.Empty;
+                deviceX.Text = string.Empty;
+                deviceY.Text = string.Empty;
+                deviceZ.Text = string.Empty;
+                deviceYaw.Text = string.Empty;
+                devicePitch.Text = string.Empty;
+                deviceRoll.Text = string.Empty;
+            }
+            if (e.AddedItems.Count == 0)
+                return;
+            DeviceInformation item = ((DeviceInformationDisplay)e.AddedItems[0]).DeviceInformation;
+            CurrentTracker = new OpenTrackBLEBridge.SensorTag2(item);
+            CurrentTracker.StatusChanged += CurrentTracker_StatusChanged;
+            CurrentTracker.ValueChanged += CurrentTracker_ValueChanged;
+            deviceName.Text = CurrentTracker.Name;
+            await CurrentTracker.Connect();
+        }
+
+        string _host = string.Empty;
+        string _port = string.Empty;
+
+        private async void CurrentTracker_ValueChanged(object sender, OpenTrackUDPData e)
+        {
+            OpenTrackUDP.SendData(e, _host, _port);
+            await Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+            {
+                deviceX.Text = e.X.ToString();
+                deviceY.Text = e.Y.ToString();
+                deviceZ.Text = e.Z.ToString();
+                deviceYaw.Text = e.Yaw.ToString();
+                devicePitch.Text = e.Pitch.ToString();
+                deviceRoll.Text = e.Roll.ToString();
+            });
+
+        }
+
+        private async void CurrentTracker_StatusChanged(object sender, EventArgs e)
         {
             await Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
             {
-                var exists = BLEDevices.Where(b => b.BluetoothAddress == args.BluetoothAddress).ToList();
-                if (exists.Count == 0)
+                deviceStatus.Text = CurrentTracker.Status.ToString();
+                deviceMsg.Text = CurrentTracker.StatusMsg;
+            
+                if (CurrentTracker.Status == TrackerStatus.Align || CurrentTracker.Status == TrackerStatus.Woriking)
                 {
-                    BLEDevices.Add(new BLEDevice
-                    {
-                        Name = string.IsNullOrWhiteSpace(args.Advertisement.LocalName) ? "N/A" : args.Advertisement.LocalName,
-                        Rssi = args.RawSignalStrengthInDBm,
-                        BluetoothAddress = args.BluetoothAddress
-                    });
-                    
+                    refluhBtn.IsEnabled = false;
+                    dvicelist.IsEnabled = false;
                 }
                 else
                 {
-                    exists.ForEach(delegate (BLEDevice e)
-                    {
-                        e.BluetoothAddress = args.BluetoothAddress;
-                        e.Name = string.IsNullOrWhiteSpace(args.Advertisement.LocalName) ? "N/A" : args.Advertisement.LocalName;
-                        e.Rssi = args.RawSignalStrengthInDBm;
-                    });
+                    refluhBtn.IsEnabled = true;
+                    dvicelist.IsEnabled = true;
+                }
+                
+                if (CurrentTracker.Status == TrackerStatus.Connecting || CurrentTracker.Status == TrackerStatus.Disconnected)
+                {
+                    deviceBtn.IsEnabled = false;
+                }
+                else
+                {
+                    deviceBtn.IsEnabled = true;
                 }
             });
+
+        }
+
+        private void splitViewToggle_Checked(object sender, RoutedEventArgs e)
+        {
+            if (splitView != null)
+                splitView.IsPaneOpen = true;
+        }
+
+        private void splitViewToggle_Unchecked(object sender, RoutedEventArgs e)
+        {
+
+            if (splitView != null)
+                splitView.IsPaneOpen = false;
+        }
+
+        private void Button_Click(object sender, RoutedEventArgs e)
+        {
+            BLEDeviceCollection.Clear();
+            FindDevice();
+        }
+
+       
+
+        private void deviceBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (CurrentTracker == null)
+                return;
+            if (CurrentTracker.Status == TrackerStatus.Connected)
+            {
+                _host = hostTxt.Text;
+                _port = hostPortTxt.Text;
+                hostPortTxt.IsEnabled = false;
+                hostTxt.IsEnabled = false;
+                CurrentTracker.BeginGetData();
+                deviceBtn.Content = "Stop";
+            }
+            else
+            {
+                hostPortTxt.IsEnabled = true;
+                hostTxt.IsEnabled = true;
+                CurrentTracker.StopGetData();
+                deviceBtn.Content = "Start";
+            }
         }
     }
 
-    public class BLEDevice
-    {
-        public string Name { get; set; }
-        public System.Int16 Rssi { get; set; }
-        public System.UInt64 BluetoothAddress { get; set; }
-        public string BluetoothAddressHex { get { return BluetoothAddress.ToString("X2"); } }
-    }
+
 }
