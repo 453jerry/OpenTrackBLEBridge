@@ -59,10 +59,6 @@ namespace OpenTrackBLEBridge
 
         public double Roll { get; set; }
 
-        public void Updatae(SensorTag2.MovementMeasurement data)
-        {
-
-        }
 
     }
 }

@@ -33,8 +33,8 @@ namespace OpenTrackBLEBridge
         public event EventHandler StatusChanged;
 
         public TrackerStatus Status { get; private set; }
-        public string StatusMsg { get;  private set;}
-        public string Name { get {return _deviceInfo.Name; } }
+        public string StatusMsg { get; private set; }
+        public string Name { get { return _deviceInfo.Name; } }
 
         GattDeviceService _service = null;
 
@@ -117,7 +117,7 @@ namespace OpenTrackBLEBridge
                     UpdateStatue(TrackerStatus.Disconnected, "Device unreachable");
                     return false;
                 }
-                UpdateStatue(TrackerStatus.Connected, "Device connected");
+                UpdateStatue(TrackerStatus.Connected, "Device connected. Calibrate magnetometer ");
                 return true;
             }
             catch
@@ -152,245 +152,168 @@ namespace OpenTrackBLEBridge
             return false;
         }
 
-        public void Align()
-        {
-
-        }
-
-        bool  _isGetData
+        bool _isGetData
              = false;
         public void BeginGetData()
         {
             _isGetData = true;
         }
-        
+
         public void StopGetData()
         {
             _isGetData = false;
-            UpdateStatue(TrackerStatus.Connected, "Device connected");
+            UpdateStatue(TrackerStatus.Connected, "Device connected. Calibrate magnetometer. Rotate the device ");
         }
 
 
-        MovementMeasurement measurement = new MovementMeasurement();
-        LowerPassFilter _accXFiliter = new LowerPassFilter(4);
-        LowerPassFilter _accYFiliter = new LowerPassFilter(4);
-        LowerPassFilter _accZFiliter = new LowerPassFilter(4);
-        LowerPassFilter _gyroZFiliter = new LowerPassFilter(4);
+        LowerPassFilter _accXFiliter = new LowerPassFilter(10);
+        LowerPassFilter _accYFiliter = new LowerPassFilter(10);
+        //LowerPassFilter _accZFiliter = new LowerPassFilter(4);
+        LowerPassFilter _magXFiliter = new LowerPassFilter(10);
+        LowerPassFilter _magYFiliter = new LowerPassFilter(10);
 
-        Aligner _accXAligner = new Aligner(50);
-        Aligner _accYAligner = new Aligner(50);
-        Aligner _gyroZAligner = new Aligner(50);
+        AvgCalibrator _accXCalibrator = new AvgCalibrator(50);
+        AvgCalibrator _accYCalibrator = new AvgCalibrator(50);
+        AvgCalibrator _yawCalibrator = new AvgCalibrator(50);
 
-
-        double _currentYaw = 0;
-        long dt = 0;
-
+        MagneticCalibrator _magCalibrator = new MagneticCalibrator();
+        
         private void _data_characteristic_ValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
         {
+
+
+            var movementData = ConvertData(args.CharacteristicValue);
+
+            //Debug.WriteLine("{0},{1},{2},{3},{4},{5},{6},{7},{8}", movementData.AccelX.ToString("0.00"),
+            //    movementData.AccelY.ToString("0.00"),
+            //    movementData.AccelZ.ToString("0.00"),
+            //    movementData.GyroX.ToString("0.00"),
+            //    movementData.GyroY.ToString("0.00"),
+            //    movementData.GyroZ.ToString("0.00"),
+            //    movementData.MagX.ToString("0.00"),
+            //    movementData.MagY.ToString("0.00"),
+            //    movementData.MagZ.ToString("0.00"));
+
+            
+
+
+            if (movementData.AccelZ == 0 && movementData.AccelY == 0 && movementData.AccelX == 0)
+                return;
+            if (movementData.MagX == 0 && movementData.MagY == 0 && movementData.MagZ == 0)
+                return;
+
+            //Debug.WriteLine("[{0},{1},{2}],", movementData.MagX, movementData.MagY, movementData.MagZ);
+
             if (_isGetData == false)
             {
+                _magCalibrator.Update(movementData);
                 return;
             }
+            
+
+            OpenTrackUDPData result = new OpenTrackUDPData();
+       
+
             if (Status == TrackerStatus.Connected)
             {
-                _accXAligner.Reset();
-                _accYAligner.Reset();
-                _gyroZAligner.Reset();
+                _accXCalibrator.Reset();
+                _accYCalibrator.Reset();
+                _yawCalibrator.Reset();
+
                 _accXFiliter.Reset();
                 _accYFiliter.Reset();
-                _accXFiliter.Reset();
-                _gyroZFiliter.Reset();
-                _currentYaw = 0;
-                dt = 0;
-                UpdateStatue(TrackerStatus.Align, "Aliging, keep stable");
- 
+                _magYFiliter.Reset();
+                _magXFiliter.Reset();
+                UpdateStatue(TrackerStatus.Calibrate, "Calibrate accelerometer, keep stable");
             }
-            long nT = args.Timestamp.ToUnixTimeMilliseconds();
-            measurement.Update(args.CharacteristicValue);
 
-            if (_accXAligner.Count < _accXAligner.Range)
+            var magBias = _magCalibrator.GetBias();
+
+            Debug.WriteLine("[{0},{1},{2}],", movementData.MagX - magBias.X, movementData.MagY - magBias.Y, movementData.MagZ - magBias.Z);
+
+            if (_accXCalibrator.Count < _accXCalibrator.Range)
             {
-                _accXAligner.Update(measurement.AccelX);
-                _accYAligner.Update(measurement.AccelX);
-                _gyroZAligner.Update(measurement.GyroZ);
-                
+                result.Yaw = CalaAngle(movementData.MagY - magBias.Y, movementData.MagX - magBias.X);
+                _accXCalibrator.Update(movementData.AccelX);
+                _accYCalibrator.Update(movementData.AccelX);
+                _yawCalibrator.Update(result.Yaw);
             }
             else
             {
                 UpdateStatue(TrackerStatus.Woriking, "Working..");
             }
 
-            measurement.AccelX = _accXFiliter.GetVal(measurement.AccelX);
-            measurement.AccelY = _accYFiliter.GetVal(measurement.AccelY);
-            measurement.AccelZ = _accZFiliter.GetVal(measurement.AccelZ);
-            measurement.GyroZ = _gyroZFiliter.GetVal(measurement.GyroZ);
-
-            var pitch = CalaPitch(measurement.AccelX -　_accXAligner.AlignValue, measurement.AccelZ);
-            var roll = CalaRoll(measurement.AccelY - _accYAligner.AlignValue, measurement.AccelZ);
-
-            if (dt != 0)
+            movementData.AccelX = _accXFiliter.GetVal(movementData.AccelX);
+            movementData.AccelY = _accYFiliter.GetVal(movementData.AccelY);
+            movementData.MagX = _magXFiliter.GetVal(movementData.MagX);
+            movementData.MagY = _magYFiliter.GetVal(movementData.MagY);
+            result.Yaw = CalaAngle(movementData.MagY - magBias.Y, movementData.MagX - magBias.X);
+            result.Yaw =result.Yaw - _yawCalibrator.Bias;
+            if (result.Yaw < 0)
             {
-                _currentYaw += -1 * (measurement.GyroZ - _gyroZAligner.AlignValue) * (nT - dt) / 1000;
+                result.Yaw = 360 + result.Yaw;
             }
-            dt = nT;
-                    
-            OpenTrackUDPData data = new OpenTrackUDPData();
-            data.Pitch = pitch;
-            data.Roll = roll;
-            data.Yaw = _currentYaw;
 
-            if (ValueChanged != null )
+            result.Pitch = CalaAngle(movementData.AccelZ, (movementData.AccelX - _accXCalibrator.Bias) * -1);
+            result.Roll = CalaAngle(movementData.AccelZ, (movementData.AccelY - _accYCalibrator.Bias) );
+            if (ValueChanged != null)
             {
-                ValueChanged(this, data);
-            }
-        }
-        
-        double CalaPitch(double x, double z)
-        {
-
-            double tan = Math.Abs(x) / Math.Abs(z);
-            double d = Math.Atan(tan);
-            d = d * 180 / Math.PI;
-
-            if (z < 0) {
-                d = 180 - d;
-            }
-            if (x > 0)
-            {
-                return d * -1;
-            }
-            else
-            {
-                return d;
+                ValueChanged(this, result);
             }
         }
 
-        double CalaRoll(double y, double z)
+        double CalaAngle(double x, double y)
         {
-
-            double tan = Math.Abs(y) / Math.Abs(z);
-            double d = Math.Atan(tan);
-            d = d * 180 / Math.PI;
-
-            if (z < 0)
-            {
-                d = 180 - d;
-            }
-            if (y > 0)
-            {
-                return d;
-            }
-            else
-            {
-                return d * -1;
-            }
-        }
-
-        double CalaYall(double x, double y)
-        {
-            double tan = Math.Abs(x) / Math.Abs(y);
-            double d = Math.Atan(tan);
-            d = d * 180 / Math.PI;
-
+            double cos = x / Math.Sqrt(Math.Pow(x, 2) + Math.Pow(y, 2));
+            if (cos > 1)
+                cos = 1;
+            else if (cos < -1)
+                cos = -1;
+            double radians = MathNet.Numerics.Trig.Acos(cos);
             if (y < 0)
             {
-                d = 180 - d;
-            }
-            if (x > 0)
-            {
-                return d;
+                return 360 - radians * 180 / Math.PI;
             }
             else
             {
-                return d * -1;
+                return radians * 180 / Math.PI;
             }
         }
 
-
-        public class MovementMeasurement
+        public MovementMeasurement ConvertData(IBuffer buffer)
         {
-            /// <summary>
-            /// Get/Set X accelerometer in units of 1 g (9.81 m/s^2).
-            /// </summary>
-            public double AccelX { get; set; }
-
-            /// <summary>
-            /// Get/Set Y accelerometer in units of 1 g (9.81 m/s^2).
-            /// </summary>
-            public double AccelY { get; set; }
-
-            /// <summary>
-            /// Get/Set Z accelerometer in units of 1 g (9.81 m/s^2).
-            /// </summary>
-            public double AccelZ { get; set; }
-
-            /// <summary>
-            /// Get/Set X twist in degrees per second.
-            /// </summary>
-            public double GyroX { get; set; }
-
-            /// <summary>
-            /// Get/Set Y twist in degrees per second.
-            /// </summary>
-            public double GyroY { get; set; }
-
-            /// <summary>
-            /// Get/Set Z twist in degrees per second.
-            /// </summary>
-            public double GyroZ { get; set; }
-
-            /// <summary>
-            /// Get/Set X direction in units of 1 micro tesla.
-            /// </summary>
-            public double MagX { get; set; }
-
-            /// <summary>
-            /// Get/Set Y direction in units of 1 micro tesla.
-            /// </summary>
-            public double MagY { get; set; }
-
-            /// <summary>
-            /// Get/Set Z direction in units of 1 micro tesla.
-            /// </summary>
-            public double MagZ { get; set; }
-
-            public MovementMeasurement()
+            MovementMeasurement movement = new MovementMeasurement();
+            uint dataLength = buffer.Length;
+            using (DataReader reader = DataReader.FromBuffer(buffer))
             {
-            }
-
-            public void Update(IBuffer buffer)
-            {
-                uint dataLength = buffer.Length;
-                using (DataReader reader = DataReader.FromBuffer(buffer))
+                if (dataLength == 18)
                 {
-                    if (dataLength == 18)
-                    {
-                        short gx = Utility.ReadBigEndian16bit(reader);
-                        short gy = Utility.ReadBigEndian16bit(reader);
-                        short gz = Utility.ReadBigEndian16bit(reader);
-                        short ax = Utility.ReadBigEndian16bit(reader);
-                        short ay = Utility.ReadBigEndian16bit(reader);
-                        short az = Utility.ReadBigEndian16bit(reader);
-                        short mx = Utility.ReadBigEndian16bit(reader);
-                        short my = Utility.ReadBigEndian16bit(reader);
-                        short mz = Utility.ReadBigEndian16bit(reader);
+                    short gx = Utility.ReadBigEndian16bit(reader);
+                    short gy = Utility.ReadBigEndian16bit(reader);
+                    short gz = Utility.ReadBigEndian16bit(reader);
+                    short ax = Utility.ReadBigEndian16bit(reader);
+                    short ay = Utility.ReadBigEndian16bit(reader);
+                    short az = Utility.ReadBigEndian16bit(reader);
+                    short mx = Utility.ReadBigEndian16bit(reader);
+                    short my = Utility.ReadBigEndian16bit(reader);
+                    short mz = Utility.ReadBigEndian16bit(reader);
 
-                        this.GyroX = ((double)gx * 500.0) / 65536.0;
-                        this.GyroY = ((double)gy * 500.0) / 65536.0;
-                        this.GyroZ = ((double)gz * 500.0) / 65536.0;
+                    movement.GyroX = ((double)gx * 500.0) / 65536.0;
+                    movement.GyroY = ((double)gy * 500.0) / 65536.0;
+                    movement.GyroZ = ((double)gz * 500.0) / 65536.0;
 
-                        this.AccelX = (((double)ax * 8.0) / 32768);
-                        this.AccelY = (((double)ay * 8.0) / 32768);
-                        this.AccelZ = (((double)az * 8.0) / 32768);
+                    movement.AccelX = (((double)ax * 8.0) / 32768);
+                    movement.AccelY = (((double)ay * 8.0) / 32768);
+                    movement.AccelZ = (((double)az * 8.0) / 32768);
 
-                        // on SensorTag CC2650 the conversion to micro tesla's is done in the firmware.
-                        this.MagX = (double)mx;
-                        this.MagY = (double)my;
-                        this.MagZ = (double)mz;
-                    }
+                    // on SensorTag CC2650 the conversion to micro tesla's is done in the firmware.
+                    movement.MagX = (double)mx;
+                    movement.MagY = (double)my;
+                    movement.MagZ = (double)mz;
                 }
             }
+            return movement;
+
         }
-        
     }
 }

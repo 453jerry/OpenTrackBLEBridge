@@ -111,7 +111,7 @@ namespace OpenTrackBLEBridge
                 deviceStatus.Text = CurrentTracker.Status.ToString();
                 deviceMsg.Text = CurrentTracker.StatusMsg;
             
-                if (CurrentTracker.Status == TrackerStatus.Align || CurrentTracker.Status == TrackerStatus.Woriking)
+                if (CurrentTracker.Status == TrackerStatus.Calibrate || CurrentTracker.Status == TrackerStatus.Woriking)
                 {
                     refluhBtn.IsEnabled = false;
                     dvicelist.IsEnabled = false;

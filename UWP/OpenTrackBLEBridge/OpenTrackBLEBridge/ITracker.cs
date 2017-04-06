@@ -12,7 +12,7 @@ namespace OpenTrackBLEBridge
         Disconnected,
         Connecting,
         Connected,
-        Align,
+        Calibrate,
         Woriking
 
     }
